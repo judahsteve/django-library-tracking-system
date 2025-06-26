@@ -5,6 +5,10 @@ from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, Loa
 from rest_framework.decorators import action
 from django.utils import timezone
 from .tasks import send_loan_notification
+from celery import chain
+from datetime import timedelta, date
+from django.utils.timezone import now
+from datetime import timedelta, date
 
 class AuthorViewSet(viewsets.ModelViewSet):
     queryset = Author.objects.all()
@@ -49,6 +53,51 @@ class MemberViewSet(viewsets.ModelViewSet):
     queryset = Member.objects.all()
     serializer_class = MemberSerializer
 
+    @action(detail=False, methods=['get'], url_path='top-active')
+    def top_active(self, request):
+        top_members = (
+            Member.objects
+            .annotate(active_loans=Count('loans', filter=Q(loans__is_returned=False)))
+            .filter(active_loans__gt=0)
+            .order_by('-active_loans')[:5]
+        )
+
+        if not top_members:
+            return Response({'message': 'No active members found.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        data = []
+        for member in top_members:
+            data.append({
+                "id": member.id,
+                "username": member.user.username,
+                "active_loans": member.active_loans
+            })
+
+        return Response(data, status=status.HTTP_200_OK)
+
 class LoanViewSet(viewsets.ModelViewSet):
     queryset = Loan.objects.all()
     serializer_class = LoanSerializer
+
+    @action(detail=True, methods=['post'])
+    def extend_due_date(self, request, pk=None):
+        loan = self.get_object()
+        additional_days = request.data.get('additional_days')
+
+        today = now().date()
+        if loan.due_date < today:
+            return Response({'error': 'Cannot extend due date for overdue loans.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if isinstance(additional_days, int) and additional_days > 0 
+            loan.due_date += timedelta(days=additional_days)
+            loan.save()
+    
+            serializer = LoanSerializer(loan)
+            return Response({
+                'status': 'Date extended successfully.',
+                'loan': serializer.data
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({'error': 'Invalid parameter.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
